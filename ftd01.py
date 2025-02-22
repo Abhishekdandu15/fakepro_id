@@ -13,11 +13,9 @@ import time
 from pathlib import Path
 
 # ---------------------------
-# Cache and State Management
+# Session State Initialization
 # ---------------------------
-@st.cache_resource
 def init_session_state():
-    """Initialize session state variables"""
     defaults = {
         "users": {},
         "logged_in": False,
@@ -26,12 +24,19 @@ def init_session_state():
         "temp_user": {},
         "show_otp_input": False,
         "prediction_history": [],
-        "model_trained": False
+        "model_trained": False,
+        "train_columns": []  # to store feature names from training
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
+# Initialize session state immediately
+init_session_state()
+
+# ---------------------------
+# Cache and Data Functions
+# ---------------------------
 @st.cache_data
 def load_and_preprocess_data(file):
     """Load and preprocess data with caching"""
@@ -49,7 +54,7 @@ def preprocess_data(df):
     # Drop unnecessary columns
     df_cleaned = df_cleaned.drop(columns=[col for col in drop_columns if col in df_cleaned.columns])
     
-    # Efficient null handling
+    # Efficient null handling and conversion
     if "location" in df_cleaned.columns:
         df_cleaned.loc[:, "location"] = df_cleaned["location"].fillna("Unknown")
         # Convert location to categorical codes (numeric)
@@ -61,15 +66,21 @@ def preprocess_data(df):
     
     return df_cleaned
 
-@st.cache_resource
+@st.cache_data
 def train_models_with_cache(X_train, X_test, y_train, y_test):
-    """Train models with caching to prevent retraining and ensure all data is numeric"""
-    # Convert all columns to dummy variables (if needed) and align train/test sets
+    """
+    Train models with caching.
+    Convert features using get_dummies and align train/test sets.
+    Return trained models, performance metrics, and the list of training columns.
+    """
+    # Convert categorical/numeric features into dummy variables
     X_train = pd.get_dummies(X_train)
     X_test = pd.get_dummies(X_test)
     X_train, X_test = X_train.align(X_test, join='left', axis=1, fill_value=0)
     
-    # Lighter model configurations for better performance
+    # Save the training feature names for later use
+    train_columns = list(X_train.columns)
+    
     rf_clf = RandomForestClassifier(
         n_estimators=50,
         max_depth=5,
@@ -87,26 +98,25 @@ def train_models_with_cache(X_train, X_test, y_train, y_test):
         random_state=42
     )
     
-    # Train models
+    # Train both models
     rf_clf.fit(X_train, y_train)
     xgb_clf.fit(X_train, y_train)
     
-    # Get predictions and metrics
+    # Predictions and metrics
     y_pred_rf = rf_clf.predict(X_test)
     y_pred_xgb = xgb_clf.predict(X_test)
     
-    # Calculate metrics
     accuracy_rf = accuracy_score(y_test, y_pred_rf)
     accuracy_xgb = accuracy_score(y_test, y_pred_xgb)
     report_rf = classification_report(y_test, y_pred_rf)
     report_xgb = classification_report(y_test, y_pred_xgb)
     
-    return rf_clf, xgb_clf, accuracy_rf, report_rf, accuracy_xgb, report_xgb
+    return rf_clf, xgb_clf, accuracy_rf, report_rf, accuracy_xgb, report_xgb, train_columns
 
 @st.cache_data
 def create_prediction_visualizations(input_data, probability, prediction_history):
     """Create cached visualizations for predictions"""
-    # Pie chart
+    # Pie chart of prediction probabilities
     fig_pie = px.pie(
         values=[probability[1], probability[0]],
         names=['Fake', 'Real'],
@@ -114,7 +124,7 @@ def create_prediction_visualizations(input_data, probability, prediction_history
         color_discrete_sequence=['#FF6B6B', '#4ECDC4']
     )
     
-    # Feature comparison
+    # Feature distribution chart
     feature_names = ['Statuses', 'Followers', 'Friends', 'Location', 'Default Profile', 'Background Tile']
     fig_features = go.Figure()
     fig_features.add_trace(go.Scatter(
@@ -132,7 +142,7 @@ def create_prediction_visualizations(input_data, probability, prediction_history
         hovermode='x'
     )
     
-    # History chart
+    # History chart if available
     if prediction_history:
         history_df = pd.DataFrame(prediction_history)
         fig_history = px.line(
@@ -153,19 +163,19 @@ def create_prediction_visualizations(input_data, probability, prediction_history
 # Helper Functions
 # ---------------------------
 def generate_otp():
-    """Generate OTP"""
+    """Generate a random 6-digit OTP"""
     return random.randint(100000, 999999)
 
 def save_model(model, filename):
-    """Save trained model"""
+    """Save trained model to disk"""
     Path("models").mkdir(exist_ok=True)
     joblib.dump(model, f"models/{filename}")
 
 def load_model(filename):
-    """Load trained model"""
+    """Load trained model from disk"""
     try:
         return joblib.load(f"models/{filename}")
-    except:
+    except Exception as e:
         return None
 
 # ---------------------------
@@ -177,9 +187,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Initialize session state
-init_session_state()
 
 # ---------------------------
 # Navigation
@@ -215,10 +222,10 @@ if page == "Register":
                 st.session_state["show_otp_input"] = True
                 st.info(f"🔐 Your OTP is: {otp}")
 
-        if st.session_state["show_otp_input"]:
+        if st.session_state.get("show_otp_input", False):
             otp_input = st.text_input("Enter OTP")
             if st.button("Verify OTP"):
-                if otp_input and st.session_state["otp"]:
+                if otp_input and st.session_state.get("otp"):
                     if int(otp_input) == st.session_state["otp"]:
                         user_details = st.session_state["temp_user"]
                         st.session_state["users"][user_details["username"]] = user_details
@@ -244,7 +251,7 @@ if page == "Login":
             password = st.text_input("Password", type="password", key="login_password")
         
         if st.button("Login"):
-            users = st.session_state["users"]
+            users = st.session_state.get("users", {})
             if username in users and users[username]["password"] == password:
                 st.session_state["logged_in"] = True
                 st.session_state["current_user"] = username
@@ -258,14 +265,13 @@ if page == "Login":
 # Fake Profile Detection Page
 # ---------------------------
 if page == "Fake Profile Detection":
-    if not st.session_state["logged_in"]:
+    if not st.session_state.get("logged_in", False):
         st.error("⚠️ Please log in to access this page.")
     else:
         st.title("🕵️‍♂️ Fake Profile Detection App")
         
-        # Sidebar
         with st.sidebar:
-            st.write(f"👤 Logged in as: {st.session_state['current_user']}")
+            st.write(f"👤 Logged in as: {st.session_state.get('current_user', 'Unknown')}")
             if st.button("Logout"):
                 st.session_state["logged_in"] = False
                 st.session_state["current_user"] = None
@@ -275,7 +281,6 @@ if page == "Fake Profile Detection":
                 st.session_state["prediction_history"] = []
                 st.success("History cleared!")
         
-        # Main content
         uploaded_file = st.file_uploader("📤 Upload Training Data (CSV)", type=["csv"])
         
         if uploaded_file is not None:
@@ -287,7 +292,6 @@ if page == "Fake Profile Detection":
                 features = ["statuses_count", "followers_count", "friends_count", 
                             "location", "default_profile", "profile_background_tile"]
                 
-                # Ensure that the Label column is converted to integer (0 for real, 1 for fake)
                 X = df[features]
                 y = df["Label"].astype(int)
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -295,18 +299,18 @@ if page == "Fake Profile Detection":
                 if st.button("Train Models"):
                     progress_bar = st.progress(0)
                     status_text = st.empty()
-                    
-                    # Simulate progress while training
                     for i in range(100):
                         progress_bar.progress(i + 1)
                         status_text.text(f"Training in progress: {i+1}%")
                         time.sleep(0.01)
                     
-                    rf_clf, xgb_clf, accuracy_rf, report_rf, accuracy_xgb, report_xgb = train_models_with_cache(
+                    rf_clf, xgb_clf, accuracy_rf, report_rf, accuracy_xgb, report_xgb, train_columns = train_models_with_cache(
                         X_train, X_test, y_train, y_test
                     )
                     
-                    # Save models
+                    # Save the expected feature names in session state
+                    st.session_state["train_columns"] = train_columns
+                    
                     save_model(rf_clf, "rf_model.joblib")
                     save_model(xgb_clf, "xgb_model.joblib")
                     
@@ -326,29 +330,26 @@ if page == "Fake Profile Detection":
         st.write("## 🎯 Predict Fake Profile")
         with st.form("prediction_form"):
             col1, col2, col3 = st.columns(3)
-            
             with col1:
                 statuses_count = st.number_input("Statuses Count", min_value=0)
                 followers_count = st.number_input("Followers Count", min_value=0)
-            
             with col2:
                 friends_count = st.number_input("Friends Count", min_value=0)
                 location = st.number_input("Location Code", min_value=0)
-            
             with col3:
                 default_profile = st.selectbox("Default Profile", [0, 1])
                 profile_background_tile = st.selectbox("Profile Background Tile", [0, 1])
             
             submitted = st.form_submit_button("Predict")
             if submitted:
-                if not st.session_state.get("model_trained"):
+                if not st.session_state.get("model_trained", False):
                     st.error("⚠️ Please train the model first!")
                 else:
                     rf_clf = load_model("rf_model.joblib")
                     if rf_clf is None:
                         st.error("⚠️ Model not found. Please train the model first!")
                     else:
-                        # Prepare input data as a DataFrame and align with training features if necessary.
+                        # Create input DataFrame from form values
                         input_df = pd.DataFrame([{
                             "statuses_count": statuses_count,
                             "followers_count": followers_count,
@@ -358,17 +359,17 @@ if page == "Fake Profile Detection":
                             "profile_background_tile": profile_background_tile
                         }])
                         
-                        # Convert input data using get_dummies similar to training
+                        # Convert input data using get_dummies and reindex to match training columns
                         input_data = pd.get_dummies(input_df)
+                        train_columns = st.session_state.get("train_columns", [])
+                        input_data = input_data.reindex(columns=train_columns, fill_value=0)
                         
-                        # For prediction, we assume the model was trained on the same feature set.
                         prediction = rf_clf.predict(input_data)[0]
                         probability = rf_clf.predict_proba(input_data)[0]
                         
                         result = "Fake Profile" if prediction == 1 else "Real Profile"
                         confidence = probability[1] if prediction == 1 else probability[0]
                         
-                        # Add to history
                         st.session_state["prediction_history"].append({
                             'timestamp': pd.Timestamp.now(),
                             'prediction': result,
@@ -376,7 +377,6 @@ if page == "Fake Profile Detection":
                             'features': input_df.iloc[0].tolist()
                         })
                         
-                        # Display results
                         st.write("### 📊 Prediction Results")
                         col1, col2 = st.columns(2)
                         with col1:
@@ -384,7 +384,6 @@ if page == "Fake Profile Detection":
                         with col2:
                             st.metric("Confidence", f"{confidence:.2%}")
                         
-                        # Create and display visualizations
                         fig_pie, fig_features, fig_history = create_prediction_visualizations(
                             input_df.values, probability, st.session_state["prediction_history"]
                         )
@@ -397,15 +396,12 @@ if page == "Fake Profile Detection":
                         
                         if fig_history:
                             st.plotly_chart(fig_history, use_container_width=True)
-        # Display prediction history
+        
         if st.session_state["prediction_history"]:
             st.write("### 📜 Prediction History")
-            
-            # Convert history to DataFrame
             history_df = pd.DataFrame(st.session_state["prediction_history"])
             history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
             
-            # Display history table with formatting
             st.dataframe(
                 history_df[['timestamp', 'prediction', 'confidence']].style.format({
                     'confidence': '{:.2%}'
@@ -413,10 +409,8 @@ if page == "Fake Profile Detection":
                 use_container_width=True
             )
             
-            # Export options
             st.write("### 📤 Export Options")
             col1, col2 = st.columns(2)
-            
             with col1:
                 if st.button("Export Prediction History"):
                     csv = history_df.to_csv(index=False)
@@ -426,10 +420,9 @@ if page == "Fake Profile Detection":
                         file_name="prediction_history.csv",
                         mime="text/csv"
                     )
-            
             with col2:
                 if st.button("Export Trained Model"):
-                    if st.session_state.get("model_trained"):
+                    if st.session_state.get("model_trained", False):
                         model = load_model("rf_model.joblib")
                         if model is not None:
                             with open("models/rf_model.joblib", "rb") as f:
@@ -444,19 +437,15 @@ if page == "Fake Profile Detection":
                             st.error("Model file not found. Please train the model first.")
                     else:
                         st.error("Please train the model first!")
-
-        # Add footer with metrics
+        
         st.write("---")
         if st.session_state["prediction_history"]:
             st.write("### 📊 Overall Statistics")
             stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
-            
             total_predictions = len(st.session_state["prediction_history"])
-            fake_profiles = sum(1 for p in st.session_state["prediction_history"] 
-                                if p["prediction"] == "Fake Profile")
+            fake_profiles = sum(1 for p in st.session_state["prediction_history"] if p["prediction"] == "Fake Profile")
             real_profiles = total_predictions - fake_profiles
             avg_confidence = sum(p["confidence"] for p in st.session_state["prediction_history"]) / total_predictions
-            
             with stats_col1:
                 st.metric("Total Predictions", total_predictions)
             with stats_col2:
@@ -465,8 +454,7 @@ if page == "Fake Profile Detection":
                 st.metric("Real Profiles Detected", real_profiles)
             with stats_col4:
                 st.metric("Average Confidence", f"{avg_confidence:.2%}")
-
-        # Add help section
+        
         with st.expander("ℹ️ Help & Instructions"):
             st.write("""
             ### How to use this app:
@@ -490,8 +478,7 @@ if page == "Fake Profile Detection":
             - Regularly export your prediction history.
             - Retrain the model with new data periodically.
             """)
-
-        # Add about section
+        
         with st.expander("ℹ️ About"):
             st.write("""
             ### Fake Profile Detection App
@@ -508,9 +495,6 @@ if page == "Fake Profile Detection":
             **Version:** 1.0.0
             """)
 
-# ---------------------------
-# CSS Styling
-# ---------------------------
 st.markdown("""
     <style>
     .stMetric .label {
@@ -539,7 +523,5 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Script initialization point
 if __name__ == "__main__":
-    # Create models directory if it doesn't exist
     Path("models").mkdir(exist_ok=True)
