@@ -42,26 +42,33 @@ def load_and_preprocess_data(file):
 def preprocess_data(df):
     """Preprocess the dataset efficiently with caching"""
     drop_columns = ["id", "name", "screen_name", "created_at", "updated", "profile_image_url", 
-                   "profile_banner_url", "profile_background_image_url_https", "profile_image_url_https", 
-                   "profile_background_image_url", "description"]
+                    "profile_banner_url", "profile_background_image_url_https", "profile_image_url_https", 
+                    "profile_background_image_url", "description"]
     
     df_cleaned = df.copy()
     # Drop unnecessary columns
     df_cleaned = df_cleaned.drop(columns=[col for col in drop_columns if col in df_cleaned.columns])
     
     # Efficient null handling
-    df_cleaned.loc[:, "location"] = df_cleaned["location"].fillna("Unknown")
-    df_cleaned.loc[:, "default_profile"] = df_cleaned["default_profile"].fillna(0)
-    df_cleaned.loc[:, "profile_background_tile"] = df_cleaned["profile_background_tile"].fillna(0)
-    
-    # Convert location to categorical codes
-    df_cleaned.loc[:, "location"] = df_cleaned["location"].astype("category").cat.codes
+    if "location" in df_cleaned.columns:
+        df_cleaned.loc[:, "location"] = df_cleaned["location"].fillna("Unknown")
+        # Convert location to categorical codes (numeric)
+        df_cleaned.loc[:, "location"] = df_cleaned["location"].astype("category").cat.codes
+    if "default_profile" in df_cleaned.columns:
+        df_cleaned.loc[:, "default_profile"] = df_cleaned["default_profile"].fillna(0)
+    if "profile_background_tile" in df_cleaned.columns:
+        df_cleaned.loc[:, "profile_background_tile"] = df_cleaned["profile_background_tile"].fillna(0)
     
     return df_cleaned
 
 @st.cache_resource
 def train_models_with_cache(X_train, X_test, y_train, y_test):
-    """Train models with caching to prevent retraining"""
+    """Train models with caching to prevent retraining and ensure all data is numeric"""
+    # Convert all columns to dummy variables (if needed) and align train/test sets
+    X_train = pd.get_dummies(X_train)
+    X_test = pd.get_dummies(X_test)
+    X_train, X_test = X_train.align(X_test, join='left', axis=1, fill_value=0)
+    
     # Lighter model configurations for better performance
     rf_clf = RandomForestClassifier(
         n_estimators=50,
@@ -278,10 +285,11 @@ if page == "Fake Profile Detection":
                 st.dataframe(df.head())
                 
                 features = ["statuses_count", "followers_count", "friends_count", 
-                           "location", "default_profile", "profile_background_tile"]
+                            "location", "default_profile", "profile_background_tile"]
                 
+                # Ensure that the Label column is converted to integer (0 for real, 1 for fake)
                 X = df[features]
-                y = df["Label"]
+                y = df["Label"].astype(int)
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
                 
                 if st.button("Train Models"):
@@ -340,23 +348,32 @@ if page == "Fake Profile Detection":
                     if rf_clf is None:
                         st.error("⚠️ Model not found. Please train the model first!")
                     else:
-                        input_data = np.array([[
-                            statuses_count, followers_count, friends_count,
-                            location, default_profile, profile_background_tile
-                        ]])
+                        # Prepare input data as a DataFrame and align with training features if necessary.
+                        input_df = pd.DataFrame([{
+                            "statuses_count": statuses_count,
+                            "followers_count": followers_count,
+                            "friends_count": friends_count,
+                            "location": location,
+                            "default_profile": default_profile,
+                            "profile_background_tile": profile_background_tile
+                        }])
                         
-                        prediction = rf_clf.predict(input_data)
+                        # Convert input data using get_dummies similar to training
+                        input_data = pd.get_dummies(input_df)
+                        
+                        # For prediction, we assume the model was trained on the same feature set.
+                        prediction = rf_clf.predict(input_data)[0]
                         probability = rf_clf.predict_proba(input_data)[0]
                         
-                        result = "Fake Profile" if prediction[0] == 1 else "Real Profile"
-                        confidence = probability[1] if prediction[0] == 1 else probability[0]
+                        result = "Fake Profile" if prediction == 1 else "Real Profile"
+                        confidence = probability[1] if prediction == 1 else probability[0]
                         
                         # Add to history
                         st.session_state["prediction_history"].append({
                             'timestamp': pd.Timestamp.now(),
                             'prediction': result,
                             'confidence': confidence,
-                            'features': input_data[0].tolist()
+                            'features': input_df.iloc[0].tolist()
                         })
                         
                         # Display results
@@ -369,7 +386,7 @@ if page == "Fake Profile Detection":
                         
                         # Create and display visualizations
                         fig_pie, fig_features, fig_history = create_prediction_visualizations(
-                            input_data, probability, st.session_state["prediction_history"]
+                            input_df.values, probability, st.session_state["prediction_history"]
                         )
                         
                         col1, col2 = st.columns(2)
@@ -436,7 +453,7 @@ if page == "Fake Profile Detection":
             
             total_predictions = len(st.session_state["prediction_history"])
             fake_profiles = sum(1 for p in st.session_state["prediction_history"] 
-                              if p["prediction"] == "Fake Profile")
+                                if p["prediction"] == "Fake Profile")
             real_profiles = total_predictions - fake_profiles
             avg_confidence = sum(p["confidence"] for p in st.session_state["prediction_history"]) / total_predictions
             
@@ -453,25 +470,25 @@ if page == "Fake Profile Detection":
         with st.expander("ℹ️ Help & Instructions"):
             st.write("""
             ### How to use this app:
-            1. **Upload Training Data**: Start by uploading a CSV file containing profile data
-            2. **Train the Model**: Click the 'Train Models' button to train the detection models
-            3. **Make Predictions**: Enter profile details and click 'Predict' to analyze
-            4. **View Results**: Check the visualizations and prediction history
-            5. **Export Data**: Download your prediction history or trained model
+            1. **Upload Training Data**: Start by uploading a CSV file containing profile data.
+            2. **Train the Model**: Click the 'Train Models' button to train the detection models.
+            3. **Make Predictions**: Enter profile details and click 'Predict' to analyze.
+            4. **View Results**: Check the visualizations and prediction history.
+            5. **Export Data**: Download your prediction history or trained model.
             
             ### Feature Descriptions:
-            - **Statuses Count**: Number of posts/statuses
-            - **Followers Count**: Number of followers
-            - **Friends Count**: Number of friends/following
-            - **Location Code**: Encoded location value
-            - **Default Profile**: Whether the profile uses default settings (0/1)
-            - **Profile Background Tile**: Whether the profile has a tiled background (0/1)
+            - **Statuses Count**: Number of posts/statuses.
+            - **Followers Count**: Number of followers.
+            - **Friends Count**: Number of friends/following.
+            - **Location Code**: Encoded location value.
+            - **Default Profile**: Whether the profile uses default settings (0/1).
+            - **Profile Background Tile**: Whether the profile has a tiled background (0/1).
             
             ### Tips:
-            - Ensure your training data is properly formatted
-            - Monitor the confidence scores for reliability
-            - Regularly export your prediction history
-            - Retrain the model with new data periodically
+            - Ensure your training data is properly formatted.
+            - Monitor the confidence scores for reliability.
+            - Regularly export your prediction history.
+            - Retrain the model with new data periodically.
             """)
 
         # Add about section
@@ -482,11 +499,11 @@ if page == "Fake Profile Detection":
             It employs both Random Forest and XGBoost algorithms for high accuracy prediction.
             
             **Features:**
-            - Real-time profile analysis
-            - Interactive visualizations
-            - Historical tracking
-            - Model export capabilities
-            - Comprehensive statistics
+            - Real-time profile analysis.
+            - Interactive visualizations.
+            - Historical tracking.
+            - Model export capabilities.
+            - Comprehensive statistics.
             
             **Version:** 1.0.0
             """)
