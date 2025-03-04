@@ -234,7 +234,7 @@ if page == "Register":
                         st.session_state["show_otp_input"] = False
                         st.session_state["temp_user"] = {}
                         time.sleep(2)
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("❌ Incorrect OTP. Please try again.")
 
@@ -257,7 +257,7 @@ if page == "Login":
                 st.session_state["current_user"] = username
                 st.success(f"Welcome back, {username}! 👋")
                 time.sleep(1)
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("❌ Invalid username or password.")
 
